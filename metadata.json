@@ -1,0 +1,8 @@
+{
+  "name": "Control de Descarga de Contenedores",
+  "description": "Sistema profesional para el registro y control físico de bultos durante la descarga de contenedores con importación de Excel, autoguardado en IndexedDB y exportación de informes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
