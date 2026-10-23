@@ -244,6 +244,106 @@ class IndexedDBStorage {
     });
   }
 
+  // Add a newly arrived reference that was not in the manifest with its packages
+  async addNewReferenceToContainer(
+    containerId: string,
+    rawReference: string,
+    expectedPackages: number,
+    initialRegisteredPackages: number = 0,
+    notes?: string
+  ): Promise<{ referenceItem: ReferenceItem; movement?: Movement }> {
+    const reference = normalizeReference(rawReference);
+    if (!reference) {
+      throw new Error('El código de referencia no puede estar vacío.');
+    }
+    if (expectedPackages < 0 || initialRegisteredPackages < 0) {
+      throw new Error('La cantidad de bultos no puede ser negativa.');
+    }
+
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['references', 'movements', 'containers'], 'readwrite');
+      const refStore = tx.objectStore('references');
+      const movStore = tx.objectStore('movements');
+      const containerStore = tx.objectStore('containers');
+
+      const index = refStore.index('containerId');
+      const req = index.getAll(IDBKeyRange.only(containerId));
+
+      req.onsuccess = () => {
+        const existingRefs: ReferenceItem[] = req.result || [];
+        const existing = existingRefs.find(
+          (r) => normalizeReference(r.reference) === reference
+        );
+
+        if (existing) {
+          reject(
+            new Error(
+              `La referencia "${reference}" ya existe en este contenedor (${existing.registeredPackages}/${existing.expectedPackages} bultos).`
+            )
+          );
+          return;
+        }
+
+        const now = new Date().toISOString();
+        const refId =
+          'ref_' + containerId + '_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+        const status = calculateReferenceStatus(expectedPackages, initialRegisteredPackages);
+
+        const newRefItem: ReferenceItem = {
+          id: refId,
+          containerId,
+          reference,
+          expectedPackages,
+          registeredPackages: initialRegisteredPackages,
+          status,
+          lastUpdated: now,
+        };
+
+        refStore.put(newRefItem);
+
+        let movement: Movement | undefined;
+        if (initialRegisteredPackages > 0) {
+          movement = {
+            id: 'mov_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+            containerId,
+            reference,
+            isUnidentified: false,
+            quantity: initialRegisteredPackages,
+            previousCount: 0,
+            newCount: initialRegisteredPackages,
+            operationType: 'MANUAL_ADD_REF',
+            timestamp: now,
+            details: `Referencia agregada manualmente: ${initialRegisteredPackages} bulto(s) registrado(s) de ${expectedPackages} esperados${
+              notes ? ` (${notes})` : ''
+            }`,
+          };
+          movStore.put(movement);
+        }
+
+        // Update container status if initial packages registered
+        const cReq = containerStore.get(containerId);
+        cReq.onsuccess = () => {
+          const container: Container = cReq.result;
+          if (container) {
+            if (initialRegisteredPackages > 0) {
+              if (!container.startedAt) container.startedAt = now;
+              if (container.status === 'SIN_INICIAR') container.status = 'EN_PROCESO';
+            }
+            containerStore.put(container);
+          }
+        };
+
+        tx.oncomplete = () => {
+          resolve({ referenceItem: newRefItem, movement });
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+
+      req.onerror = () => reject(req.error);
+    });
+  }
+
   // --- MOVEMENTS ---
 
   async getMovementsByContainer(containerId: string): Promise<Movement[]> {

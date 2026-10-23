@@ -23,6 +23,7 @@ export async function runAllTests(
   const results: TestResult[] = [];
   const testDefs = [
     testUDC260826Acceptance,
+    testManualReferenceAddition,
     testImportGroupingAndPieceProtection,
     testCountingAndStatusProgression,
     testOverageDetection,
@@ -522,5 +523,79 @@ async function testUDC260826Acceptance(): Promise<TestResult> {
     passed,
     durationMs: 0,
     details: `113 refs únicas (${rItems.length} R- con ${rPackages} bultos + ${ucItems.length} UC con ${ucPackages} bultos = 209 bultos). UC07311 (23), UC07312 (10). Fila 14 encabezados 'Item No' y 'CTNS' detectada. Fila 132 TOTAL aislada.`,
+  };
+}
+
+// 10. MANUAL REFERENCE ADDITION TEST: Adding unmanifested references and bultos
+async function testManualReferenceAddition(): Promise<TestResult> {
+  const testContainerId = 'test_man_ref_' + Date.now();
+  const testContainerCode = 'UDC-MAN-TEST';
+
+  const container: Container = {
+    id: testContainerId,
+    code: testContainerCode,
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    completedAt: null,
+    status: 'SIN_INICIAR',
+  };
+
+  await dbService.createNewContainer(container, []);
+
+  // 1. Add newly arrived reference (e.g. R-26415 or unexpected toy reference)
+  const rawRef = 'R-26415-TEST';
+  const expectedPkgs = 5;
+  const initialPkgs = 2;
+
+  const { referenceItem, movement } = await dbService.addNewReferenceToContainer(
+    testContainerId,
+    rawRef,
+    expectedPkgs,
+    initialPkgs,
+    'Llegó mercancía no registrada en manifiesto'
+  );
+
+  const refsAfterAdd = await dbService.getReferencesByContainer(testContainerId);
+  const found = refsAfterAdd.find((r) => r.reference === 'R-26415-TEST');
+
+  // 2. Test duplicate prevention
+  let duplicatePrevented = false;
+  try {
+    await dbService.addNewReferenceToContainer(
+      testContainerId,
+      '  r-26415-test  ',
+      3,
+      1
+    );
+  } catch (err: any) {
+    duplicatePrevented = true;
+  }
+
+  // 3. Test undo compensating movement for manual add
+  const undoRes = await dbService.undoLastMovement(testContainerId);
+  const refsAfterUndo = await dbService.getReferencesByContainer(testContainerId);
+  const foundAfterUndo = refsAfterUndo.find((r) => r.reference === 'R-26415-TEST');
+
+  // Clean up
+  await dbService.deleteContainer(testContainerId);
+
+  const passed = !!(
+    found &&
+    found.expectedPackages === 5 &&
+    found.registeredPackages === 2 &&
+    found.status === 'PARCIAL' &&
+    movement?.operationType === 'MANUAL_ADD_REF' &&
+    duplicatePrevented &&
+    undoRes.success &&
+    foundAfterUndo?.registeredPackages === 0
+  );
+
+  return {
+    id: 'test_manual_ref_add',
+    name: 'Referencias Nuevas: Incorporación Manual al Contenedor y Conteo de Bultos',
+    category: 'CORRECCIONES',
+    passed,
+    durationMs: 0,
+    details: `Referencia ${rawRef} agregada al contenedor (2/5 bultos, PARCIAL), duplicado prevenido y deshacer compensatorio verificado.`,
   };
 }

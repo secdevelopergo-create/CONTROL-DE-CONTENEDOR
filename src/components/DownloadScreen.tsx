@@ -9,6 +9,7 @@ import {
   Clock,
   AlertCircle,
   Package,
+  PackagePlus,
   Layers,
   Flag,
   ChevronRight,
@@ -33,6 +34,7 @@ import { QuickEntry } from './QuickEntry';
 import { ReferenceList } from './ReferenceList';
 import { ReferenceDetailModal } from './ReferenceDetailModal';
 import { UnidentifiedModal } from './UnidentifiedModal';
+import { AddReferenceModal } from './AddReferenceModal';
 import { OverageWarningModal } from './OverageWarningModal';
 import { MovementsDrawer } from './MovementsDrawer';
 import { FinalizeModal } from './FinalizeModal';
@@ -80,6 +82,12 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
     reference: string;
     quantity: number;
   }>({ isOpen: false, reference: '', quantity: 1 });
+
+  const [addRefModalData, setAddRefModalData] = useState<{
+    isOpen: boolean;
+    initialReference?: string;
+    initialQuantity?: number;
+  }>({ isOpen: false, initialReference: '', initialQuantity: 1 });
 
   const [overageModalData, setOverageModalData] = useState<{
     isOpen: boolean;
@@ -286,6 +294,46 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
     }
   };
 
+  // Add new reference directly to container manifest
+  const handleAddNewReference = async (
+    refCode: string,
+    expectedPackages: number,
+    registeredPackages: number,
+    notes?: string
+  ): Promise<boolean> => {
+    try {
+      const { referenceItem } = await dbService.addNewReferenceToContainer(
+        containerId,
+        refCode,
+        expectedPackages,
+        registeredPackages,
+        notes
+      );
+
+      if (registeredPackages > 0) {
+        if (referenceItem.status === 'COMPLETO') {
+          sounds.playItemComplete();
+        } else {
+          sounds.playScanSuccess();
+        }
+      } else {
+        sounds.playScanSuccess();
+      }
+
+      triggerToast(
+        'success',
+        `Referencia agregada: ${referenceItem.reference} (${referenceItem.registeredPackages}/${referenceItem.expectedPackages} bultos - ${referenceItem.status})`
+      );
+
+      await loadContainerData();
+      onRefreshAll();
+      return true;
+    } catch (err: any) {
+      alert(err?.message || 'Error agregando referencia');
+      return false;
+    }
+  };
+
   // UNDO last movement
   const handleUndo = async () => {
     try {
@@ -400,8 +448,25 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
           </div>
         </div>
 
-        {/* Action Buttons: Undo, History, Report, Finalize */}
+        {/* Action Buttons: Add Ref, Undo, History, Report, Finalize */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* ADD REFERENCE BUTTON */}
+          <button
+            type="button"
+            onClick={() =>
+              setAddRefModalData({
+                isOpen: true,
+                initialReference: '',
+                initialQuantity: 1,
+              })
+            }
+            title="Agregar manualmente una referencia que no estaba en el archivo Excel con sus bultos"
+            className="px-3.5 py-2 rounded-xl border border-blue-600 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold transition-all flex items-center gap-1.5 active:scale-95 shadow-xs"
+          >
+            <PackagePlus className="w-4 h-4 text-blue-600 stroke-[2.5]" />
+            <span>+ AGREGAR REFERENCIA</span>
+          </button>
+
           {/* UNDO BUTTON */}
           <button
             onClick={handleUndo}
@@ -570,6 +635,13 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
         references={references}
         onRegister={handleRegister}
         onUnidentifiedFound={handleUnidentifiedFound}
+        onOpenAddReference={(refCode, qty) =>
+          setAddRefModalData({
+            isOpen: true,
+            initialReference: refCode,
+            initialQuantity: qty,
+          })
+        }
         onOverageWarning={(item, qty, onConfirm) => {
           sounds.playOverageWarning();
           setOverageModalData({
@@ -629,6 +701,13 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
         onSelectReference={(item) => setSelectedRefItem(item)}
         onQuickAdd={(refId) => handleQuickAdd(refId, 1)}
         onQuickSubtract={(refId) => handleQuickSubtract(refId)}
+        onOpenAddReference={(initialRef) =>
+          setAddRefModalData({
+            isOpen: true,
+            initialReference: initialRef || '',
+            initialQuantity: 1,
+          })
+        }
       />
 
       {/* MODALS */}
@@ -664,6 +743,23 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
           setUnidentifiedModalData({ isOpen: false, reference: '', quantity: 1 })
         }
         onConfirm={handleConfirmUnidentified}
+        onAddAsReference={handleAddNewReference}
+      />
+
+      {/* 2.5 Add New Reference Modal */}
+      <AddReferenceModal
+        isOpen={addRefModalData.isOpen}
+        initialReference={addRefModalData.initialReference}
+        initialQuantity={addRefModalData.initialQuantity}
+        existingReferences={references}
+        onClose={() =>
+          setAddRefModalData({
+            isOpen: false,
+            initialReference: '',
+            initialQuantity: 1,
+          })
+        }
+        onAddReference={handleAddNewReference}
       />
 
       {/* 3. Overage Warning Modal */}

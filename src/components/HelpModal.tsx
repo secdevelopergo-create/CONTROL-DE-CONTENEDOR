@@ -43,11 +43,14 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
 
           <div className="space-y-2 border-t pt-3">
             <h3 className="font-bold text-slate-900 uppercase text-xs">
-              2. Mercancía No Identificada
+              2. Referencias Nuevas y Mercancía No Registrada
             </h3>
             <p>
-              Si se escribe una referencia no encontrada en el Excel importado, el sistema avisa y permite registrarla como <b>MERCANCÍA INESPERADA</b> sin alterar el manifiesto original.
+              Si llegan referencias que no estaban en el archivo Excel original, puedes incorporarlas al contenedor con el botón <b>+ AGREGAR REFERENCIA</b> o escribiendo el código en el registro rápido. Podrás indicar los bultos esperados y recibidos para que se sumen al control y a los informes oficiales.
             </p>
+            <div className="text-[11px] text-amber-900 bg-amber-50 p-2.5 rounded-lg border border-amber-200">
+              <b>Nota sobre R-26415:</b> La referencia R-26415 ya fue recibida en una entrega anterior y no está en este contenedor. Si llegaran bultos físicos no previstos, puedes agregarlos al instante con sus respectivos bultos.
+            </div>
           </div>
 
           <div className="space-y-2 border-t pt-3">

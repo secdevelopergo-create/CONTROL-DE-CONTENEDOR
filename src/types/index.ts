@@ -15,6 +15,7 @@ export type OperationType =
   | 'REMOVE'
   | 'CORRECTION'
   | 'UNIDENTIFIED_ADD'
+  | 'MANUAL_ADD_REF'
   | 'UNDO';
 
 export interface Container {

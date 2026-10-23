@@ -17,6 +17,7 @@ interface ReferenceListProps {
   onSelectReference: (item: ReferenceItem) => void;
   onQuickAdd: (referenceId: string) => void;
   onQuickSubtract: (referenceId: string) => void;
+  onOpenAddReference?: (initialRef?: string) => void;
 }
 
 type FilterType = 'TODAS' | 'COMPLETAS' | 'PARCIALES' | 'PENDIENTES' | 'SOBRANTES';
@@ -26,6 +27,7 @@ export const ReferenceList: React.FC<ReferenceListProps> = ({
   onSelectReference,
   onQuickAdd,
   onQuickSubtract,
+  onOpenAddReference,
 }) => {
   const [filter, setFilter] = useState<FilterType>('TODAS');
   const [searchQuery, setSearchQuery] = useState('');
@@ -110,12 +112,25 @@ export const ReferenceList: React.FC<ReferenceListProps> = ({
       {/* Search and Filters Header */}
       <div className="p-4 sm:p-5 border-b border-slate-200 space-y-3.5">
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-          <h2 className="text-base font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
-            <span>Listado de Referencias</span>
-            <span className="px-2 py-0.5 rounded-full text-xs font-mono bg-slate-100 text-slate-600 font-semibold">
-              {filteredList.length} de {references.length}
-            </span>
-          </h2>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h2 className="text-base font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+              <span>Listado de Referencias</span>
+              <span className="px-2 py-0.5 rounded-full text-xs font-mono bg-slate-100 text-slate-600 font-semibold">
+                {filteredList.length} de {references.length}
+              </span>
+            </h2>
+            {onOpenAddReference && (
+              <button
+                type="button"
+                onClick={() => onOpenAddReference()}
+                title="Agregar manualmente una referencia que no estaba en el archivo Excel"
+                className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs transition-all active:scale-95"
+              >
+                <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>+ AGREGAR REFERENCIA</span>
+              </button>
+            )}
+          </div>
 
           {/* Search Bar */}
           <div className="relative flex-1 max-w-md">
@@ -221,8 +236,20 @@ export const ReferenceList: React.FC<ReferenceListProps> = ({
       {/* Rows List */}
       <div className="divide-y divide-slate-100 max-h-[600px] overflow-y-auto">
         {filteredList.length === 0 ? (
-          <div className="p-8 text-center text-slate-500 text-sm">
-            No se encontraron referencias con los filtros aplicados.
+          <div className="p-8 text-center text-slate-500 text-sm space-y-3">
+            <p>No se encontraron referencias con los filtros aplicados.</p>
+            {searchQuery.trim() && onOpenAddReference && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => onOpenAddReference(searchQuery.trim())}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 font-bold text-xs transition-all active:scale-95"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span>+ Agregar &quot;{searchQuery.trim().toUpperCase()}&quot; al contenedor</span>
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           filteredList.map((item) => {

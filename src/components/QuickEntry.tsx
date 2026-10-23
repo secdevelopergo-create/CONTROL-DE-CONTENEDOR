@@ -22,6 +22,7 @@ interface QuickEntryProps {
     attemptedQuantity: number,
     onConfirm: () => void
   ) => void;
+  onOpenAddReference?: (refCode: string, qty: number) => void;
   disabled?: boolean;
 }
 
@@ -30,6 +31,7 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
   onRegister,
   onUnidentifiedFound,
   onOverageWarning,
+  onOpenAddReference,
   disabled = false,
 }) => {
   const [inputVal, setInputVal] = useState('');
@@ -273,6 +275,37 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Non-manifest reference hint & shortcut */}
+          {inputVal.trim().length >= 2 && !activeItem && suggestions.length === 0 && (
+            <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 animate-in fade-in duration-150">
+              <div className="flex items-center gap-2 text-xs text-amber-900">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  <b>&quot;{normalizeReference(inputVal)}&quot;</b> no figura en el Excel del contenedor.
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {onOpenAddReference && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpenAddReference(normalizeReference(inputVal), quantity);
+                      setInputVal('');
+                      setActiveItem(null);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs transition-all active:scale-95 flex items-center gap-1 shadow-xs"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Agregar al Contenedor</span>
+                  </button>
+                )}
+                <span className="text-[11px] text-amber-700 hidden md:inline">
+                  o pulsa [Enter] para registrar
+                </span>
+              </div>
             </div>
           )}
         </div>
