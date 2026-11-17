@@ -103,15 +103,17 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="hidden lg:inline">{soundOn ? 'Audio ON' : 'Audio OFF'}</span>
           </button>
 
-          {/* Automated Test Suite Button */}
-          <button
-            onClick={onOpenTestSuite}
-            title="Suite de pruebas de importación, conteos y persistencia"
-            className="px-2.5 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700 text-xs font-medium transition-colors flex items-center gap-1.5"
-          >
-            <FileCheck2 className="w-4 h-4 text-emerald-400" />
-            <span className="hidden sm:inline">Pruebas</span>
-          </button>
+          {/* Automated Test Suite Button - Hidden in production for operational simplicity */}
+          {import.meta.env.DEV && (
+            <button
+              onClick={onOpenTestSuite}
+              title="Suite de pruebas de aceptación (modo desarrollo)"
+              className="px-2.5 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700 text-xs font-medium transition-colors flex items-center gap-1.5"
+            >
+              <FileCheck2 className="w-4 h-4 text-emerald-400" />
+              <span className="hidden sm:inline">Pruebas</span>
+            </button>
+          )}
 
           {/* Backup & Restore */}
           <button

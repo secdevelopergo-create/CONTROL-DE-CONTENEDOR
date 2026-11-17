@@ -9,9 +9,11 @@ import {
   CornerDownLeft,
   X,
   Volume2,
+  ShieldAlert,
+  Info,
 } from 'lucide-react';
 import { ReferenceItem, ReferenceStatus } from '../types';
-import { normalizeReference } from '../services/db';
+import { normalizeReference, resolveReferenceMatch } from '../services/db';
 
 interface QuickEntryProps {
   references: ReferenceItem[];
@@ -49,7 +51,7 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
     inputRef.current?.focus();
   }, []);
 
-  // Update suggestions when user types
+  // Update suggestions & exact match using strict resolution
   useEffect(() => {
     const raw = inputVal.trim();
     if (!raw) {
@@ -60,20 +62,35 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
     }
 
     const norm = normalizeReference(raw);
+
+    // Exact or strict prefix match check (e.g. 26423 or R26423 or R-26423 -> R-26423)
+    const match = resolveReferenceMatch(raw, references);
+    if (match.matchedItem) {
+      setActiveItem(match.matchedItem);
+    } else {
+      setActiveItem(null);
+    }
+
+    // Suggestions matching reference, source/original document code, or description
+    const normAlpha = norm.replace(/[^A-Z0-9]/g, '');
     const matches = references
-      .filter((r) => r.reference.includes(norm))
+      .filter((r) => {
+        const refMatch = r.reference.includes(norm);
+        const docMatch = r.originalDocumentReference?.includes(norm);
+        const srcMatch = r.sourceReference?.includes(norm);
+        const canMatch = r.canonicalReference?.includes(norm);
+        const descMatch = r.description?.toUpperCase().includes(norm);
+        const alphaMatch =
+          normAlpha.length > 0 &&
+          (r.reference.replace(/[^A-Z0-9]/g, '').includes(normAlpha) ||
+            r.sourceReference?.replace(/[^A-Z0-9]/g, '').includes(normAlpha) ||
+            r.originalDocumentReference?.replace(/[^A-Z0-9]/g, '').includes(normAlpha));
+        return refMatch || docMatch || srcMatch || canMatch || descMatch || alphaMatch;
+      })
       .slice(0, 8);
 
     setSuggestions(matches);
     setSelectedIndex(-1);
-
-    // Exact match check
-    const exact = references.find((r) => r.reference === norm);
-    if (exact) {
-      setActiveItem(exact);
-    } else {
-      setActiveItem(null);
-    }
   }, [inputVal, references]);
 
   const handleSelectSuggestion = (item: ReferenceItem) => {
@@ -92,17 +109,19 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
       const norm = normalizeReference(targetRef);
       if (!norm) return;
 
-      const item = references.find((r) => r.reference === norm);
+      // Strict reference resolution: recognize 26423, R26423, R-26423 ONLY if full code exists
+      // Do NOT guess missing digits (e.g. 2614 must NOT become R-26414)
+      const match = resolveReferenceMatch(targetRef, references);
 
-      if (!item) {
-        // Not in manifest -> Trigger unidentified modal
+      if (!match.matchedItem) {
+        // Not in manifest -> Route to "Por identificar"
         onUnidentifiedFound(norm, qty);
-        setInputVal('');
-        setActiveItem(null);
-        setSuggestions([]);
-        setQuantity(1);
+        // Requirement: "Keep input values and quantity on registration failure"
+        // Do NOT reset inputVal or quantity so operator retains context!
         return;
       }
+
+      const item = match.matchedItem;
 
       // Check for overage warning
       const futureTotal = item.registeredPackages + qty;
@@ -115,8 +134,10 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
       }
 
       // Normal valid registration
-      await onRegister(item.reference, qty);
-      resetForm();
+      const success = await onRegister(item.reference, qty);
+      if (success) {
+        resetForm();
+      }
     } finally {
       setIsSubmitting(false);
       isSubmittingLock.current = false;
@@ -253,15 +274,26 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
                   <div
                     key={item.id}
                     onClick={() => handleSelectSuggestion(item)}
-                    className={`p-3 cursor-pointer flex items-center justify-between text-sm transition-colors ${
+                    className={`p-3 cursor-pointer flex items-center justify-between gap-2 text-sm transition-colors ${
                       isSelected ? 'bg-blue-50 text-blue-900 font-bold' : 'hover:bg-slate-50'
                     }`}
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-base">{item.reference}</span>
-                      {getStatusBadge(item.status)}
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono font-bold text-base">{item.reference}</span>
+                        {(item.sourceReference || item.originalDocumentReference) &&
+                          (item.sourceReference || item.originalDocumentReference) !== item.reference && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-blue-100 text-blue-800">
+                              Doc: {item.sourceReference || item.originalDocumentReference}
+                            </span>
+                          )}
+                        {getStatusBadge(item.status)}
+                      </div>
+                      {item.description && (
+                        <p className="text-[11px] text-slate-500 truncate mt-0.5">{item.description}</p>
+                      )}
                     </div>
-                    <div className="text-xs font-mono text-slate-600">
+                    <div className="text-xs font-mono text-slate-600 shrink-0 text-right">
                       <span>{item.registeredPackages}</span> /{' '}
                       <span className="font-bold">{item.expectedPackages}</span> bultos
                       {missing > 0 ? (
@@ -270,6 +302,11 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
                         </span>
                       ) : (
                         <span className="text-emerald-600 ml-2 font-semibold">✓</span>
+                      )}
+                      {(item.expectedUnits ?? item.expectedPieces) !== undefined && (
+                        <div className="text-[10px] text-slate-400">
+                          Prev: {(item.expectedUnits ?? item.expectedPieces)!.toLocaleString('es-ES')} pzas
+                        </div>
                       )}
                     </div>
                   </div>
@@ -310,18 +347,60 @@ export const QuickEntry: React.FC<QuickEntryProps> = ({
           )}
         </div>
 
+        {/* Notice for R-26415 pending clarification */}
+        {inputVal.toUpperCase().includes('26415') && (
+          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-start gap-2 animate-in fade-in duration-150">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold">Aviso sobre R-26415:</span> Esta referencia continúa pendiente de aclaración con el proveedor. No se debe suponer su recepción.
+            </div>
+          </div>
+        )}
+
         {/* Selected Reference Status Card (Live Feedback when reference is typed/matched) */}
         {activeItem && (
-          <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 sm:p-4 animate-in fade-in duration-150">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2 mb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-500 uppercase">REFERENCIA:</span>
-                <span className="font-mono text-lg sm:text-xl font-extrabold text-blue-900">
-                  {activeItem.reference}
-                </span>
+          <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 sm:p-4 animate-in fade-in duration-150 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+              <div className="space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-bold text-slate-500 uppercase">REFERENCIA:</span>
+                  <span className="font-mono text-lg sm:text-xl font-extrabold text-blue-900">
+                    {activeItem.reference}
+                  </span>
+                  {(activeItem.sourceReference || activeItem.originalDocumentReference) &&
+                    (activeItem.sourceReference || activeItem.originalDocumentReference) !==
+                      activeItem.reference && (
+                      <span className="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-blue-100 text-blue-900 border border-blue-200">
+                        Doc: {activeItem.sourceReference || activeItem.originalDocumentReference}
+                      </span>
+                    )}
+                </div>
+                {activeItem.description && (
+                  <p className="text-xs text-slate-600">{activeItem.description}</p>
+                )}
               </div>
-              <div>{getStatusBadge(activeItem.status)}</div>
+              <div className="flex items-center gap-2">
+                {(activeItem.expectedUnits ?? activeItem.expectedPieces) !== undefined && (
+                  <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-slate-200/70 text-slate-700">
+                    {(activeItem.expectedUnits ?? activeItem.expectedPieces)!.toLocaleString('es-ES')} pzas prev. (inf.)
+                  </span>
+                )}
+                {getStatusBadge(activeItem.status)}
+              </div>
             </div>
+
+            {/* Special warning note for R-26423 or items with physical arrival requirement */}
+            {activeItem.warningNote && (
+              <div className="p-3 rounded-xl border-2 border-amber-400 bg-amber-50 text-amber-950 text-xs flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="font-bold text-amber-900 uppercase">
+                    Advertencia operativa para {activeItem.reference}:
+                  </span>
+                  <p className="text-amber-900 font-medium">{activeItem.warningNote}</p>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
               <div className="bg-white p-2 rounded-lg border border-slate-200">

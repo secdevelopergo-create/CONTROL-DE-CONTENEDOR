@@ -12,15 +12,18 @@ import {
   Layers,
   ArrowRight,
   ShieldCheck,
-  Sparkles,
+  HardDrive,
+  Info,
 } from 'lucide-react';
-import { Container, ContainerStats } from '../types';
-import { createUDC260826Container, downloadUDC260826ExcelFile } from '../services/sampleData';
-import { dbService } from '../services/db';
+import { Container, ContainerStats, PlannedPreparationSummary } from '../types';
+import { PrepareContainersModal } from './PrepareContainersModal';
 
 interface DashboardProps {
   containers: Container[];
   containerStatsMap: Record<string, ContainerStats>;
+  preparationSummary: PlannedPreparationSummary | null;
+  isPreparingPlanned: boolean;
+  onPreparePlannedContainers: () => Promise<PlannedPreparationSummary | null>;
   onSelectContainer: (containerId: string) => void;
   onNewContainer: () => void;
   onDeleteContainer: (containerId: string) => void;
@@ -31,6 +34,9 @@ interface DashboardProps {
 export const Dashboard: React.FC<DashboardProps> = ({
   containers,
   containerStatsMap,
+  preparationSummary,
+  isPreparingPlanned,
+  onPreparePlannedContainers,
   onSelectContainer,
   onNewContainer,
   onDeleteContainer,
@@ -38,27 +44,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onRefresh,
 }) => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [loadingUDC, setLoadingUDC] = useState(false);
+  const [isPrepareModalOpen, setIsPrepareModalOpen] = useState(false);
 
-  const handleLoadUDC260826 = async () => {
-    try {
-      setLoadingUDC(true);
-      const existing = await dbService.getContainerByCode('UDC260826');
-      if (existing) {
-        // As requested: Do NOT overwrite, open existing and notify
-        alert(`El contenedor UDC260826 ya existe en este dispositivo. Abriendo descarga existente sin sobrescribir.`);
-        onSelectContainer(existing.id);
-        return;
-      }
-
-      const container = await createUDC260826Container();
-      onRefresh();
-      onSelectContainer(container.id);
-    } catch (err: any) {
-      alert('Error cargando contenedor UDC260826: ' + err?.message);
-    } finally {
-      setLoadingUDC(false);
-    }
+  const handlePreparePlanned = async () => {
+    setIsPrepareModalOpen(true);
+    await onPreparePlannedContainers();
   };
 
   const getStatusBadge = (status: Container['status']) => {
@@ -137,25 +127,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
 
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-          {/* Download real provider Excel for testing */}
+          {/* Preparar Contenedores 3, 4 y 5 */}
           <button
-            onClick={() => downloadUDC260826ExcelFile()}
-            title="Descarga el archivo Excel con formato original del proveedor (hojas INVOICE y PACKING LIST, fila 14 encabezados, Quantity y CTNS)"
-            className="px-3.5 py-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-xs sm:text-sm transition-all flex items-center justify-center gap-2 active:scale-95 shadow-xs"
+            onClick={handlePreparePlanned}
+            disabled={isPreparingPlanned}
+            title="Verifica o prepara de forma idempotente los contenedores previstos 3 (UDC260925-1), 4 (UDC260925-2) y 5 (UDC260939)"
+            className={`px-4 py-3 rounded-xl border font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 active:scale-95 shadow-xs ${
+              preparationSummary?.hasConflicts
+                ? 'border-rose-500 bg-rose-50 hover:bg-rose-100 text-rose-900'
+                : 'border-blue-600 bg-blue-50 hover:bg-blue-100 text-blue-900'
+            }`}
           >
-            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-            <span>Descargar Excel UDC260826</span>
-          </button>
-
-          {/* Quick Real Manifest Seeder */}
-          <button
-            onClick={handleLoadUDC260826}
-            disabled={loadingUDC}
-            title="Inicia o abre la operación física real del contenedor UDC260826 (113 referencias, 209 bultos)"
-            className="px-4 py-3 rounded-xl border border-amber-300 bg-amber-50 hover:bg-amber-100/80 text-amber-900 font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-60 shadow-xs"
-          >
-            <Sparkles className="w-4 h-4 text-amber-600" />
-            <span>{loadingUDC ? 'Cargando UDC260826...' : 'Contenedor UDC260826'}</span>
+            <Layers
+              className={`w-4 h-4 ${
+                preparationSummary?.hasConflicts ? 'text-rose-600' : 'text-blue-700'
+              }`}
+            />
+            <span>
+              {preparationSummary?.hasConflicts
+                ? 'Revisar conflictos (3, 4 y 5)'
+                : 'Preparar contenedores 3, 4 y 5'}
+            </span>
           </button>
 
           {/* Primary New Container Button */}
@@ -168,6 +160,30 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Conflict Alert Banner if existing containers diverge from planned manifests */}
+      {preparationSummary?.hasConflicts && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs sm:text-sm text-rose-950">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-extrabold text-rose-900">
+                Conflictos detectados al verificar los manifiestos previstos (3, 4 y 5)
+              </p>
+              <p className="text-rose-800">
+                Se encontraron registros previos con diferencias frente al PACKING LIST oficial. Ningún conteo ni contenedor existente fue modificado ni borrado.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsPrepareModalOpen(true)}
+            className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shrink-0 self-start sm:self-center shadow-xs"
+          >
+            Ver detalle por contenedor
+          </button>
+        </div>
+      )}
 
       {/* Global Counters */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -234,19 +250,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
             <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
               <button
+                onClick={handlePreparePlanned}
+                className="px-5 py-2.5 rounded-xl border border-blue-600 bg-blue-50 hover:bg-blue-100 text-blue-900 font-bold text-sm shadow-xs transition-all flex items-center gap-2"
+              >
+                <Layers className="w-4 h-4 text-blue-700" />
+                <span>Preparar contenedores 3, 4 y 5</span>
+              </button>
+              <button
                 onClick={onNewContainer}
                 className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition-all flex items-center gap-2"
               >
                 <Plus className="w-4 h-4" />
                 <span>+ NUEVO CONTENEDOR</span>
-              </button>
-              <button
-                onClick={handleLoadUDC260826}
-                disabled={loadingUDC}
-                className="px-4 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium text-sm transition-all flex items-center gap-2"
-              >
-                <Sparkles className="w-4 h-4 text-amber-500" />
-                <span>{loadingUDC ? 'Cargando UDC260826...' : 'Cargar Manifiesto UDC260826'}</span>
               </button>
             </div>
           </div>
@@ -258,6 +273,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               const expected = stats ? stats.expectedPackages : 0;
               const registered = stats ? stats.registeredPackages : 0;
               const totalRefs = stats ? stats.totalReferences : 0;
+              const missing = stats ? stats.missingPackages : 0;
 
               return (
                 <div
@@ -267,16 +283,31 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {/* Card Header */}
                   <div className="p-5 border-b border-slate-100 space-y-3">
                     <div className="flex items-start justify-between gap-3">
-                      <div>
+                      <div className="min-w-0">
                         <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                           CONTENEDOR
                         </div>
-                        <h3 className="text-xl font-extrabold font-mono text-slate-900 group-hover:text-blue-600 transition-colors">
+                        <h3 className="text-xl font-extrabold font-mono text-slate-900 group-hover:text-blue-600 transition-colors truncate">
                           {c.code}
                         </h3>
                       </div>
-                      <div>{getStatusBadge(c.status)}</div>
+                      <div className="shrink-0">{getStatusBadge(c.status)}</div>
                     </div>
+
+                    {(c.documentNumber || c.physicalContainer) && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {c.documentNumber && (
+                          <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                            Doc: {c.documentNumber}
+                          </span>
+                        )}
+                        {c.physicalContainer && (
+                          <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                            Físico: {c.physicalContainer}
+                          </span>
+                        )}
+                      </div>
+                    )}
 
                     <div className="flex items-center gap-2 text-xs text-slate-500">
                       <Calendar className="w-3.5 h-3.5" />
@@ -308,26 +339,47 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       </div>
                     </div>
 
-                    {/* Metric Pills */}
-                    <div className="grid grid-cols-2 gap-3 text-center">
-                      <div className="bg-white p-2.5 rounded-xl border border-slate-200">
-                        <p className="text-[11px] font-medium text-slate-500 uppercase">
+                    {/* Metric Pills with 3 metrics: Referencias, Bultos, and Por Contar / Faltantes */}
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="bg-white p-2 rounded-xl border border-slate-200">
+                        <p className="text-[10px] font-medium text-slate-500 uppercase">
                           Referencias
                         </p>
-                        <p className="text-base font-bold font-mono text-slate-800">
+                        <p className="text-sm sm:text-base font-bold font-mono text-slate-800">
                           {totalRefs}
                         </p>
                       </div>
 
-                      <div className="bg-white p-2.5 rounded-xl border border-slate-200">
-                        <p className="text-[11px] font-medium text-slate-500 uppercase">
+                      <div className="bg-white p-2 rounded-xl border border-slate-200">
+                        <p className="text-[10px] font-medium text-slate-500 uppercase">
                           Bultos
                         </p>
-                        <p className="text-base font-bold font-mono">
+                        <p className="text-sm sm:text-base font-bold font-mono">
                           <span className={registered >= expected && expected > 0 ? 'text-emerald-600' : 'text-slate-900'}>
                             {registered}
                           </span>
                           <span className="text-slate-400 font-normal"> / {expected}</span>
+                        </p>
+                      </div>
+
+                      <div
+                        className={`p-2 rounded-xl border ${
+                          missing > 0 ? 'bg-amber-50/60 border-amber-200' : 'bg-white border-slate-200'
+                        }`}
+                      >
+                        <p
+                          className={`text-[10px] font-medium uppercase truncate ${
+                            missing > 0 ? 'text-amber-800' : 'text-slate-500'
+                          }`}
+                        >
+                          {c.status.startsWith('FINALIZADO') ? 'Faltantes' : 'Por contar'}
+                        </p>
+                        <p
+                          className={`text-sm sm:text-base font-bold font-mono ${
+                            missing > 0 ? 'text-amber-800' : 'text-slate-700'
+                          }`}
+                        >
+                          {missing}
                         </p>
                       </div>
                     </div>
@@ -386,18 +438,33 @@ export const Dashboard: React.FC<DashboardProps> = ({
         )}
       </div>
 
-      {/* Information footer note */}
-      <div className="bg-slate-100/80 rounded-xl p-4 border border-slate-200/80 flex items-start gap-3 text-xs text-slate-600">
+      {/* Information footer note and browser-local disclaimer */}
+      <div className="bg-slate-100/90 rounded-2xl p-5 border border-slate-200 flex flex-col sm:flex-row items-start gap-3.5 text-xs text-slate-600">
         <ShieldCheck className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
-        <div className="space-y-0.5">
-          <p className="font-semibold text-slate-800">
-            Almacenamiento Local Seguro (IndexedDB)
+        <div className="space-y-1">
+          <p className="font-bold text-slate-900">
+            Almacenamiento Local Autónomo (IndexedDB) · Un Solo Dispositivo
           </p>
           <p>
-            Todos los conteos, bultos y movimientos se guardan de forma persistente e inmediata en este navegador. No se envía ningún dato a servidores externos. Puedes cerrar la ventana o recargar en cualquier momento sin perder tu avance.
+            Todos los conteos, bultos e historiales se guardan exclusivamente en el navegador local de este equipo. No se envían datos a la nube ni se sincronizan automáticamente con otros dispositivos. Puedes cerrar la ventana o recargar sin perder avance. Para transferir tus datos a otra tablet u ordenador, utiliza el botón <strong>Respaldo</strong> en la barra superior.
           </p>
         </div>
       </div>
+
+      {/* Prepare Containers 3, 4 & 5 Modal */}
+      <PrepareContainersModal
+        isOpen={isPrepareModalOpen}
+        summary={preparationSummary}
+        isPreparing={isPreparingPlanned}
+        onClose={() => setIsPrepareModalOpen(false)}
+        onRunPrepare={async () => {
+          await onPreparePlannedContainers();
+          onRefresh();
+        }}
+        onOpenContainer={(containerId) => {
+          onSelectContainer(containerId);
+        }}
+      />
     </div>
   );
 };

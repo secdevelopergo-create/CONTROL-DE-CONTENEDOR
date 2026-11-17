@@ -124,14 +124,48 @@ export const ReferenceDetailModal: React.FC<ReferenceDetailModalProps> = ({
 
         {/* Content */}
         <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+          {/* Warning banner if applicable */}
+          {item.warningNote && (
+            <div className="p-3.5 rounded-xl border-2 border-amber-400 bg-amber-50 text-amber-950 text-xs flex items-start gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <span className="font-bold text-amber-900 uppercase">Advertencia Operativa:</span>
+                <p className="text-amber-900 font-medium">{item.warningNote}</p>
+              </div>
+            </div>
+          )}
+
           {/* Status and Numbers summary */}
           <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Estado Actual:
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Estado Actual:
+                </span>
+                {(item.sourceReference || item.originalDocumentReference) &&
+                  (item.sourceReference || item.originalDocumentReference) !== item.reference && (
+                    <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-blue-100 text-blue-900 border border-blue-200">
+                      Doc: {item.sourceReference || item.originalDocumentReference}
+                    </span>
+                  )}
+              </div>
               {getStatusBadge()}
             </div>
+
+            {item.description && (
+              <p className="text-xs text-slate-700 bg-white px-3 py-2 rounded-lg border border-slate-200">
+                {item.description}
+              </p>
+            )}
+
+            {(item.expectedUnits ?? item.expectedPieces) !== undefined && (
+              <p className="text-[11px] font-mono text-slate-600">
+                Piezas previstas (informativo, no es contador de bultos):{' '}
+                <strong>
+                  {(item.expectedUnits ?? item.expectedPieces)!.toLocaleString('es-ES')} piezas
+                </strong>
+              </p>
+            )}
 
             <div className="grid grid-cols-3 gap-2 text-center pt-1">
               <div className="bg-white p-2.5 rounded-xl border border-slate-200">

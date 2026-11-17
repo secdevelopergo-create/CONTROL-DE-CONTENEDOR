@@ -16,7 +16,8 @@ export type OperationType =
   | 'CORRECTION'
   | 'UNIDENTIFIED_ADD'
   | 'MANUAL_ADD_REF'
-  | 'UNDO';
+  | 'UNDO'
+  | 'COMPENSATING_UNDO';
 
 export interface Container {
   id: string;
@@ -27,6 +28,10 @@ export interface Container {
   status: ContainerStatus;
   notes?: string;
   fileName?: string;
+  physicalContainer?: string;
+  documentNumber?: string;
+  sourceSha256?: string;
+  lookupAliases?: string[];
 }
 
 export interface ReferenceItem {
@@ -37,6 +42,13 @@ export interface ReferenceItem {
   registeredPackages: number;
   status: ReferenceStatus;
   lastUpdated: string;
+  canonicalReference?: string;
+  originalDocumentReference?: string;
+  sourceReference?: string;
+  warningNote?: string;
+  expectedPieces?: number;
+  expectedUnits?: number;
+  description?: string;
 }
 
 export interface UnidentifiedItem {
@@ -59,6 +71,7 @@ export interface Movement {
   operationType: OperationType;
   timestamp: string; // ISO
   details?: string;
+  undoneMovementId?: string;
 }
 
 export interface RejectedRow {
@@ -110,4 +123,72 @@ export interface ContainerStats {
   surplusPackages: number;
   unidentifiedCount: number;
   progressPercentage: number;
+}
+
+export interface PlannedManifestRow {
+  reference: string;
+  sourceReference: string;
+  expectedPackages: number;
+  expectedUnits: number;
+  description: string;
+  warningNote?: string;
+}
+
+export interface PlannedContainerSpec {
+  id: string;
+  code: string;
+  documentCode: string;
+  physicalContainerCode: string;
+  lookupAliases: string[];
+  totals: {
+    references: number;
+    expectedPackages: number;
+    expectedUnits: number;
+  };
+  sourceFile: string;
+  sourceSha256: string;
+  manifest: PlannedManifestRow[];
+}
+
+export type ContainerConflictType =
+  | 'DUPLICATE_CONTAINERS'
+  | 'DUPLICATE_REFERENCE'
+  | 'MISSING_REFERENCE'
+  | 'EXPECTED_PACKAGES_MISMATCH'
+  | 'EXPECTED_UNITS_MISMATCH'
+  | 'UNEXPECTED_REFERENCE';
+
+export interface ContainerConflictDetail {
+  type: ContainerConflictType;
+  reference?: string;
+  sourceReference?: string;
+  message: string;
+  storedValue?: string | number;
+  manifestValue?: string | number;
+  registeredPackages?: number;
+  existingContainerIds?: string[];
+}
+
+export interface ContainerPrepareResult {
+  specId: string;
+  code: string;
+  documentCode: string;
+  physicalContainerCode: string;
+  outcome: 'CREATED' | 'EXISTING_MATCH' | 'CONFLICT';
+  existingContainerId?: string;
+  container?: Container;
+  expectedReferences: number;
+  expectedPackages: number;
+  expectedUnits: number;
+  preservedManualReferencesCount: number;
+  conflicts: ContainerConflictDetail[];
+}
+
+export interface PlannedPreparationSummary {
+  preparedAt: string;
+  results: ContainerPrepareResult[];
+  hasConflicts: boolean;
+  totalCreated: number;
+  totalExistingMatch: number;
+  totalWithConflicts: number;
 }

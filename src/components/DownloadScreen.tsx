@@ -432,10 +432,20 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
           </button>
 
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 CONTENEDOR ACTIVO
               </span>
+              {container.physicalContainer && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                  Físico: {container.physicalContainer}
+                </span>
+              )}
+              {container.documentNumber && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-300">
+                  Doc: {container.documentNumber}
+                </span>
+              )}
               {isFinalized && (
                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-white">
                   FINALIZADO
@@ -519,6 +529,21 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
         </div>
       </div>
 
+      {/* Visible warning banner for R-26423 verification requirement */}
+      {references.some((r) => r.reference === 'R-26423' || r.warningNote) && (
+        <div className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 text-xs text-amber-950 flex items-start gap-3 shadow-xs animate-in fade-in duration-150">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <span className="font-bold text-amber-900 uppercase tracking-tight text-sm">
+              Advertencia visible para R-26423:
+            </span>
+            <p className="text-amber-900 font-medium">
+              Ya llegaron 720 piezas con el segundo contenedor. Se conserva la previsión del packing del tercero, pero <strong>se exige cotejar una nueva llegada física antes de incorporarla nuevamente al inventario</strong>. No marques ese bulto como recibido automáticamente.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Top Indicators Dashboard & Progress Bar */}
       <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
         {/* Progress bar */}
@@ -594,10 +619,10 @@ export const DownloadScreen: React.FC<DownloadScreenProps> = ({
             </p>
           </div>
 
-          {/* 5. Bultos Faltantes */}
+          {/* 5. Bultos Faltantes vs Bultos por contar */}
           <div className="bg-amber-50/70 p-3 rounded-xl border border-amber-200 text-center">
             <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
-              Bultos Faltantes
+              {isFinalized ? 'Bultos Faltantes' : 'Bultos por contar'}
             </p>
             <p className="text-xl sm:text-2xl font-mono font-bold text-amber-800">
               {stats.missingPackages}

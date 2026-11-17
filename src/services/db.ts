@@ -7,6 +7,10 @@ import {
   ReferenceStatus,
   ContainerStatus,
   ContainerStats,
+  PlannedContainerSpec,
+  ContainerConflictDetail,
+  ContainerPrepareResult,
+  PlannedPreparationSummary,
 } from '../types';
 
 const DB_NAME = 'ControlDescargaContenedoresDB';
@@ -14,6 +18,7 @@ const DB_VERSION = 1;
 
 class IndexedDBStorage {
   private dbPromise: Promise<IDBDatabase> | null = null;
+  private prepareMutex: Promise<any> = Promise.resolve();
 
   private getDB(): Promise<IDBDatabase> {
     if (this.dbPromise) return this.dbPromise;
@@ -113,6 +118,257 @@ class IndexedDBStorage {
       };
       request.onerror = () => reject(request.error);
     });
+  }
+
+  // Exact normalized lookup for Contenedor 3 aliases (no prefix/substring confusion)
+  async findContainer3(): Promise<Container | null> {
+    const db = await this.getDB();
+    const aliases = [
+      'CONTENEDOR 3',
+      'CONTENEDOR-3',
+      'UDC260925-1',
+      'UDC2609251',
+      'FFAU6562414',
+    ];
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('containers', 'readonly');
+      const store = tx.objectStore('containers');
+      const req = store.getAll();
+
+      req.onsuccess = () => {
+        const list = (req.result as Container[]) || [];
+        const match = list.find((c) =>
+          matchesContainerAliases(c, aliases, 'container3_UDC260925-1')
+        );
+        resolve(match || null);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // Idempotent atomic creation of Contenedor 3 in a single readwrite transaction
+  async createContainer3Atomic(
+    container: Container,
+    referenceItems: ReferenceItem[]
+  ): Promise<{ container: Container; isExisting: boolean }> {
+    const db = await this.getDB();
+    const aliases = container.lookupAliases || [
+      'CONTENEDOR 3',
+      'CONTENEDOR-3',
+      'UDC260925-1',
+      'UDC2609251',
+      'FFAU6562414',
+    ];
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['containers', 'references'], 'readwrite');
+      const cStore = tx.objectStore('containers');
+      const rStore = tx.objectStore('references');
+
+      const getAllReq = cStore.getAll();
+      getAllReq.onsuccess = () => {
+        const list = (getAllReq.result as Container[]) || [];
+        const existing = list.find((c) =>
+          matchesContainerAliases(c, aliases, container.id)
+        );
+
+        if (existing) {
+          resolve({ container: existing, isExisting: true });
+          return;
+        }
+
+        cStore.put(container);
+        referenceItems.forEach((r) => rStore.put(r));
+
+        tx.oncomplete = () => {
+          resolve({ container, isExisting: false });
+        };
+      };
+
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /**
+   * Idempotently and atomically prepares planned unloading containers (e.g. Containers 3, 4, 5).
+   * - Never deletes, clears, resets, merges, or overwrites existing containers or counts.
+   * - Reuses existing unique matching records and checks manifest parity, reporting conflicts per container/reference.
+   * - Creates only missing containers with SIN_INICIAR, startedAt/completedAt null, registeredPackages=0, PENDIENTE, 0 movements.
+   * - Serialized via mutex + single readwrite IndexedDB transaction to guarantee safety against double-clicks or reloads.
+   */
+  async preparePlannedContainers(
+    specs: PlannedContainerSpec[]
+  ): Promise<PlannedPreparationSummary> {
+    const run = async (): Promise<PlannedPreparationSummary> => {
+      const db = await this.getDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(['containers', 'references', 'movements'], 'readwrite');
+        const cStore = tx.objectStore('containers');
+        const rStore = tx.objectStore('references');
+        const mStore = tx.objectStore('movements');
+
+        let allContainers: Container[] | null = null;
+        let allRefs: ReferenceItem[] | null = null;
+        let allMovements: Movement[] | null = null;
+        let summaryResult: PlannedPreparationSummary | null = null;
+
+        const cReq = cStore.getAll();
+        const rReq = rStore.getAll();
+        const mReq = mStore.getAll();
+
+        const tryProcess = () => {
+          if (allContainers === null || allRefs === null || allMovements === null) {
+            return;
+          }
+
+          const now = new Date().toISOString();
+          const results: ContainerPrepareResult[] = [];
+          let totalCreated = 0;
+          let totalExistingMatch = 0;
+          let totalWithConflicts = 0;
+
+          for (const spec of specs) {
+            const matchingContainers = allContainers.filter((c) =>
+              matchesContainerAliases(c, spec.lookupAliases, spec.id)
+            );
+
+            if (matchingContainers.length > 1) {
+              // Conflict: Multiple equivalent containers already exist. Do NOT merge or delete!
+              totalWithConflicts++;
+              results.push({
+                specId: spec.id,
+                code: spec.code,
+                documentCode: spec.documentCode,
+                physicalContainerCode: spec.physicalContainerCode,
+                outcome: 'CONFLICT',
+                expectedReferences: spec.totals.references,
+                expectedPackages: spec.totals.expectedPackages,
+                expectedUnits: spec.totals.expectedUnits,
+                preservedManualReferencesCount: 0,
+                conflicts: [
+                  {
+                    type: 'DUPLICATE_CONTAINERS',
+                    message: `Existen ${matchingContainers.length} registros equivalentes para ${spec.code} (${spec.documentCode}). No se fusionan ni eliminan automáticamente.`,
+                    existingContainerIds: matchingContainers.map(
+                      (mc) => `${mc.code} [${mc.id}] (${mc.status})`
+                    ),
+                  },
+                ],
+              });
+              continue;
+            }
+
+            if (matchingContainers.length === 1) {
+              // Unique existing container: reuse its current ID, NEVER reset counts or alter history!
+              const existing = matchingContainers[0];
+              const existingRefs = allRefs.filter((r) => r.containerId === existing.id);
+              const existingMovs = allMovements.filter((m) => m.containerId === existing.id);
+
+              const evaluation = evaluateExistingContainerAgainstManifest(
+                existingRefs,
+                existingMovs,
+                spec
+              );
+
+              if (evaluation.conflicts.length > 0) {
+                totalWithConflicts++;
+                results.push({
+                  specId: spec.id,
+                  code: spec.code,
+                  documentCode: spec.documentCode,
+                  physicalContainerCode: spec.physicalContainerCode,
+                  outcome: 'CONFLICT',
+                  existingContainerId: existing.id,
+                  container: existing,
+                  expectedReferences: spec.totals.references,
+                  expectedPackages: spec.totals.expectedPackages,
+                  expectedUnits: spec.totals.expectedUnits,
+                  preservedManualReferencesCount: evaluation.preservedManualReferencesCount,
+                  conflicts: evaluation.conflicts,
+                });
+              } else {
+                totalExistingMatch++;
+                results.push({
+                  specId: spec.id,
+                  code: spec.code,
+                  documentCode: spec.documentCode,
+                  physicalContainerCode: spec.physicalContainerCode,
+                  outcome: 'EXISTING_MATCH',
+                  existingContainerId: existing.id,
+                  container: existing,
+                  expectedReferences: spec.totals.references,
+                  expectedPackages: spec.totals.expectedPackages,
+                  expectedUnits: spec.totals.expectedUnits,
+                  preservedManualReferencesCount: evaluation.preservedManualReferencesCount,
+                  conflicts: [],
+                });
+              }
+              continue;
+            }
+
+            // 0 matching containers -> Create new container atomically with initial SIN_INICIAR and 0 counts
+            const { container: newContainer, references: newRefs } =
+              buildPlannedContainerRecords(spec, now);
+
+            cStore.put(newContainer);
+            newRefs.forEach((r) => rStore.put(r));
+
+            // Keep snapshot updated in memory in case subsequent specs inspect allContainers
+            allContainers.push(newContainer);
+            totalCreated++;
+
+            results.push({
+              specId: spec.id,
+              code: spec.code,
+              documentCode: spec.documentCode,
+              physicalContainerCode: spec.physicalContainerCode,
+              outcome: 'CREATED',
+              existingContainerId: newContainer.id,
+              container: newContainer,
+              expectedReferences: spec.totals.references,
+              expectedPackages: spec.totals.expectedPackages,
+              expectedUnits: spec.totals.expectedUnits,
+              preservedManualReferencesCount: 0,
+              conflicts: [],
+            });
+          }
+
+          summaryResult = {
+            preparedAt: now,
+            results,
+            hasConflicts: totalWithConflicts > 0,
+            totalCreated,
+            totalExistingMatch,
+            totalWithConflicts,
+          };
+        };
+
+        cReq.onsuccess = () => {
+          allContainers = (cReq.result as Container[]) || [];
+          tryProcess();
+        };
+        rReq.onsuccess = () => {
+          allRefs = (rReq.result as ReferenceItem[]) || [];
+          tryProcess();
+        };
+        mReq.onsuccess = () => {
+          allMovements = (mReq.result as Movement[]) || [];
+          tryProcess();
+        };
+
+        tx.oncomplete = () => {
+          if (summaryResult) {
+            resolve(summaryResult);
+          } else {
+            reject(new Error('No se pudo completar la lectura atómica de contenedores.'));
+          }
+        };
+        tx.onerror = () => reject(tx.error);
+      });
+    };
+
+    const next = this.prepareMutex.then(run, run);
+    this.prepareMutex = next.catch(() => {});
+    return next;
   }
 
   async saveContainer(container: Container): Promise<void> {
@@ -614,7 +870,7 @@ class IndexedDBStorage {
     });
   }
 
-  // --- UNDO WITH COMPENSATING MOVEMENT (Preserves complete audit history!) ---
+  // --- UNDO WITH LINKED COMPENSATING MOVEMENT (Prevents undo-redo loops and preserves full audit history) ---
 
   async undoLastMovement(containerId: string): Promise<{
     success: boolean;
@@ -627,7 +883,28 @@ class IndexedDBStorage {
       return { success: false, message: 'No hay movimientos registrados para deshacer.' };
     }
 
-    const lastMovement = movements[0]; // ordered desc (latest)
+    // Collect IDs of movements that have already been compensated/undone
+    const undoneIds = new Set<string>();
+    for (const m of movements) {
+      if ((m.operationType === 'UNDO' || m.operationType === 'COMPENSATING_UNDO') && m.undoneMovementId) {
+        undoneIds.add(m.undoneMovementId);
+      }
+    }
+
+    // Find the latest operational movement that has NOT yet been undone
+    const targetMovement = movements.find(
+      (m) =>
+        m.operationType !== 'UNDO' &&
+        m.operationType !== 'COMPENSATING_UNDO' &&
+        !undoneIds.has(m.id)
+    );
+
+    if (!targetMovement) {
+      return {
+        success: false,
+        message: 'Todos los movimientos operativos previos ya han sido deshechos compensatoriamente.',
+      };
+    }
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(['references', 'unidentified', 'movements'], 'readwrite');
@@ -637,7 +914,7 @@ class IndexedDBStorage {
 
       let compensatingMovement: Movement;
 
-      if (lastMovement.isUnidentified) {
+      if (targetMovement.isUnidentified) {
         // Compensate unidentified item
         const unIndex = unStore.index('containerId');
         const req = unIndex.openCursor(IDBKeyRange.only(containerId));
@@ -646,9 +923,12 @@ class IndexedDBStorage {
           const cursor = req.result;
           if (cursor) {
             const item = cursor.value as UnidentifiedItem;
-            if (item.reference === lastMovement.reference) {
-              const targetCount = Math.max(0, lastMovement.previousCount);
-              const compQty = targetCount - item.registeredPackages;
+            if (item.reference === targetMovement.reference) {
+              const currentCount = item.registeredPackages;
+              // Balance verification: subtract the delta of the target movement
+              const delta = targetMovement.quantity;
+              const targetCount = Math.max(0, currentCount - delta);
+              const compQty = targetCount - currentCount;
 
               if (targetCount === 0) {
                 cursor.delete();
@@ -657,18 +937,21 @@ class IndexedDBStorage {
                 cursor.update(item);
               }
 
-              // Register compensating movement (DO NOT DELETE past movement!)
+              // Register compensating movement linking to the undone movement ID
               compensatingMovement = {
                 id: 'mov_undo_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
                 containerId,
-                reference: lastMovement.reference,
+                reference: targetMovement.reference,
                 isUnidentified: true,
                 quantity: compQty,
-                previousCount: lastMovement.newCount,
+                previousCount: currentCount,
                 newCount: targetCount,
-                operationType: 'UNDO',
+                operationType: 'COMPENSATING_UNDO',
                 timestamp: new Date().toISOString(),
-                details: `Deshacer: Revierte movimiento previo de ${lastMovement.quantity > 0 ? '+' : ''}${lastMovement.quantity} bulto(s). Conteo restablecido de ${lastMovement.newCount} a ${targetCount}.`,
+                undoneMovementId: targetMovement.id,
+                details: `Deshacer compensatorio: Revierte movimiento [${targetMovement.id}] de ${
+                  targetMovement.quantity > 0 ? '+' : ''
+                }${targetMovement.quantity} bulto(s). Conteo de ${currentCount} restablecido a ${targetCount}.`,
               };
               movStore.put(compensatingMovement);
             } else {
@@ -679,31 +962,37 @@ class IndexedDBStorage {
       } else {
         // Compensate standard reference
         const refIndex = refStore.index('container_ref');
-        const req = refIndex.get([containerId, lastMovement.reference]);
+        const req = refIndex.get([containerId, targetMovement.reference]);
 
         req.onsuccess = () => {
           const item = req.result as ReferenceItem;
           if (item) {
-            const targetCount = Math.max(0, lastMovement.previousCount);
-            const compQty = targetCount - item.registeredPackages;
+            const currentCount = item.registeredPackages;
+            // Balance verification: subtract delta of target movement
+            const delta = targetMovement.quantity;
+            const targetCount = Math.max(0, currentCount - delta);
+            const compQty = targetCount - currentCount;
 
             item.registeredPackages = targetCount;
             item.status = calculateReferenceStatus(item.expectedPackages, targetCount);
             item.lastUpdated = new Date().toISOString();
             refStore.put(item);
 
-            // Register compensating movement (DO NOT DELETE past movement!)
+            // Register compensating movement linking to the undone movement ID
             compensatingMovement = {
               id: 'mov_undo_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
               containerId,
               reference: item.reference,
               isUnidentified: false,
               quantity: compQty,
-              previousCount: lastMovement.newCount,
+              previousCount: currentCount,
               newCount: targetCount,
-              operationType: 'UNDO',
+              operationType: 'COMPENSATING_UNDO',
               timestamp: new Date().toISOString(),
-              details: `Deshacer: Revierte movimiento previo de ${lastMovement.quantity > 0 ? '+' : ''}${lastMovement.quantity} bulto(s). Conteo restablecido de ${lastMovement.newCount} a ${targetCount}.`,
+              undoneMovementId: targetMovement.id,
+              details: `Deshacer compensatorio: Revierte movimiento [${targetMovement.id}] de ${
+                targetMovement.quantity > 0 ? '+' : ''
+              }${targetMovement.quantity} bulto(s). Conteo de ${currentCount} restablecido a ${targetCount}.`,
             };
             movStore.put(compensatingMovement);
           }
@@ -714,7 +1003,9 @@ class IndexedDBStorage {
         resolve({
           success: true,
           compensatingMovement,
-          message: `Deshecho registrado en historial: ${lastMovement.reference} pasa de ${lastMovement.newCount} a ${lastMovement.previousCount} bultos.`,
+          message: `Deshecho registrado en historial: ${targetMovement.reference} pasa de ${
+            targetMovement.newCount
+          } a ${Math.max(0, targetMovement.previousCount)} bultos.`,
         });
       };
       tx.onerror = () => reject(tx.error);
@@ -976,10 +1267,12 @@ export function computeContainerStats(
   let registeredPackages = 0;
   let missingPackages = 0;
   let surplusPackages = 0;
+  let effectiveCountedPackages = 0;
 
   for (const ref of references) {
     expectedPackages += ref.expectedPackages;
     registeredPackages += ref.registeredPackages;
+    effectiveCountedPackages += Math.min(ref.registeredPackages, ref.expectedPackages);
 
     if (ref.registeredPackages === 0) {
       pendingReferences++;
@@ -1000,10 +1293,17 @@ export function computeContainerStats(
     surplusPackages += un.registeredPackages;
   }
 
-  const progressPercentage =
-    expectedPackages > 0
-      ? Math.min(100, Math.round((registeredPackages / expectedPackages) * 100))
-      : 0;
+  // Effective progress: sum(min(counted_i, expected_i)). Surplus cannot offset deficit.
+  // Never show 100% while expected packages remain uncounted.
+  let progressPercentage = 0;
+  if (expectedPackages > 0) {
+    const rawPct = (effectiveCountedPackages / expectedPackages) * 100;
+    if (missingPackages > 0) {
+      progressPercentage = Math.min(99, Math.floor(rawPct));
+    } else {
+      progressPercentage = 100;
+    }
+  }
 
   return {
     totalReferences: references.length,
@@ -1018,4 +1318,336 @@ export function computeContainerStats(
     unidentifiedCount: unidentified.length,
     progressPercentage,
   };
+}
+
+// Strict reference matching: recognize 26423, R26423, R-26423 ONLY if full code exists in manifest.
+// Do NOT guess missing digits (e.g. 2614 must NOT become R-26414). Unknowns go to "Por identificar".
+export function resolveReferenceMatch(
+  input: string,
+  references: ReferenceItem[]
+): {
+  matchedItem: ReferenceItem | null;
+  matchType: 'EXACT' | 'PREFIX_NORMALIZED' | 'ALIAS' | 'NONE';
+  warningMessage?: string;
+} {
+  const raw = String(input || '').trim();
+  if (!raw) return { matchedItem: null, matchType: 'NONE' };
+
+  const norm = normalizeReference(raw);
+
+  // 1. Direct exact match by reference code, canonicalReference, originalDocumentReference, or sourceReference
+  const directMatch = references.find(
+    (r) =>
+      r.reference === norm ||
+      (r.canonicalReference && r.canonicalReference === norm) ||
+      (r.originalDocumentReference && r.originalDocumentReference === norm) ||
+      (r.sourceReference && r.sourceReference === norm)
+  );
+
+  if (directMatch) {
+    const isAlias =
+      directMatch.reference !== norm &&
+      (directMatch.canonicalReference === norm ||
+        directMatch.originalDocumentReference === norm ||
+        directMatch.sourceReference === norm);
+    return {
+      matchedItem: directMatch,
+      matchType: isAlias ? 'ALIAS' : 'EXACT',
+      warningMessage: directMatch.warningNote,
+    };
+  }
+
+  // 2. Strict prefix normalization without guessing missing digits:
+  // Rule: recognize '26423', 'R26423', 'R-26423' as 'R-26423' ONLY if full reference exists in manifest.
+  // Do NOT guess missing digits (e.g. '2614' must NOT become 'R-26414').
+
+  // Case A: User typed pure digits, e.g. "26423"
+  if (/^\d+$/.test(norm)) {
+    const candidateR = `R-${norm}`;
+    const candidateUC = `UC${norm}`;
+    const matchR = references.find(
+      (r) =>
+        r.reference === candidateR ||
+        r.canonicalReference === candidateR ||
+        r.originalDocumentReference === candidateR ||
+        r.sourceReference === candidateR
+    );
+    if (matchR) {
+      return {
+        matchedItem: matchR,
+        matchType: 'PREFIX_NORMALIZED',
+        warningMessage: matchR.warningNote,
+      };
+    }
+    const matchUC = references.find((r) => r.reference === candidateUC);
+    if (matchUC) {
+      return {
+        matchedItem: matchUC,
+        matchType: 'PREFIX_NORMALIZED',
+        warningMessage: matchUC.warningNote,
+      };
+    }
+  }
+
+  // Case B: User typed "R" followed by digits, e.g. "R26423"
+  if (/^R\d+$/i.test(norm)) {
+    const candidateR = `R-${norm.slice(1)}`;
+    const matchR = references.find(
+      (r) =>
+        r.reference === candidateR ||
+        r.canonicalReference === candidateR ||
+        r.originalDocumentReference === candidateR ||
+        r.sourceReference === candidateR
+    );
+    if (matchR) {
+      return {
+        matchedItem: matchR,
+        matchType: 'PREFIX_NORMALIZED',
+        warningMessage: matchR.warningNote,
+      };
+    }
+  }
+
+  // Case C: Alphanumeric equality check (e.g. missing or extra hyphen in known code)
+  const normAlpha = norm.replace(/[^A-Z0-9]/g, '');
+  if (normAlpha.length >= 4) {
+    const candidateMatches = references.filter((r) => {
+      const refAlpha = r.reference.replace(/[^A-Z0-9]/g, '');
+      const canAlpha = r.canonicalReference?.replace(/[^A-Z0-9]/g, '');
+      const origAlpha = r.originalDocumentReference?.replace(/[^A-Z0-9]/g, '');
+      const srcAlpha = r.sourceReference?.replace(/[^A-Z0-9]/g, '');
+      return (
+        refAlpha === normAlpha ||
+        canAlpha === normAlpha ||
+        origAlpha === normAlpha ||
+        srcAlpha === normAlpha
+      );
+    });
+
+    if (candidateMatches.length === 1) {
+      const match = candidateMatches[0];
+      return {
+        matchedItem: match,
+        matchType: 'PREFIX_NORMALIZED',
+        warningMessage: match.warningNote,
+      };
+    }
+  }
+
+  // Unknown reference -> goes to "Por identificar"
+  return { matchedItem: null, matchType: 'NONE' };
+}
+
+// --- LOGISTIC IDENTITY & PLANNED MANIFEST HELPERS ---
+
+export function normalizeContainerIdentityToken(value: string): string {
+  if (!value) return '';
+  return String(value)
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
+    .replace(/\s+/g, ' ');
+}
+
+export function compactContainerIdentityToken(value: string): string {
+  return normalizeContainerIdentityToken(value).replace(/[\s\-_]/g, '');
+}
+
+/**
+ * Exact full-value normalized comparison against lookupAliases.
+ * Never groups by prefix (so UDC260925-1 and UDC260925-2 never collide).
+ */
+export function matchesContainerAliases(
+  container: Container,
+  lookupAliases: string[],
+  specId?: string
+): boolean {
+  if (specId && container.id === specId) {
+    return true;
+  }
+
+  const normalizedAliases = new Set<string>();
+  const compactAliases = new Set<string>();
+
+  for (const alias of lookupAliases) {
+    const norm = normalizeContainerIdentityToken(alias);
+    const compact = compactContainerIdentityToken(alias);
+    if (norm) normalizedAliases.add(norm);
+    if (compact) compactAliases.add(compact);
+  }
+
+  const candidateFields = [
+    container.code,
+    container.documentNumber || '',
+    container.physicalContainer || '',
+  ];
+
+  for (const field of candidateFields) {
+    const normField = normalizeContainerIdentityToken(field);
+    const compactField = compactContainerIdentityToken(field);
+    if (!normField) continue;
+    if (normalizedAliases.has(normField) || compactAliases.has(compactField)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function buildPlannedContainerRecords(
+  spec: PlannedContainerSpec,
+  nowIso: string = new Date().toISOString()
+): { container: Container; references: ReferenceItem[] } {
+  const uniqueAliases = Array.from(new Set(spec.lookupAliases));
+
+  const container: Container = {
+    id: spec.id,
+    code: spec.code,
+    documentNumber: spec.documentCode,
+    physicalContainer: spec.physicalContainerCode,
+    createdAt: nowIso,
+    startedAt: null,
+    completedAt: null,
+    status: 'SIN_INICIAR',
+    fileName: spec.sourceFile,
+    sourceSha256: spec.sourceSha256,
+    lookupAliases: uniqueAliases,
+    notes: `Documento: ${spec.documentCode} | Contenedor físico: ${spec.physicalContainerCode} | Previsión: ${spec.totals.references} ref, ${spec.totals.expectedPackages} bultos, ${spec.totals.expectedUnits.toLocaleString('es-ES')} piezas previstas. Estado: SIN_INICIAR / PREVISTO.`,
+  };
+
+  const references: ReferenceItem[] = spec.manifest.map((row) => {
+    const canonRef = normalizeReference(row.reference);
+    const srcRef = normalizeReference(row.sourceReference || row.reference);
+    return {
+      id: `ref_${spec.id}_${canonRef}`,
+      containerId: spec.id,
+      reference: canonRef,
+      canonicalReference: canonRef,
+      originalDocumentReference: srcRef,
+      sourceReference: srcRef,
+      expectedPackages: row.expectedPackages,
+      registeredPackages: 0,
+      status: 'PENDIENTE',
+      lastUpdated: nowIso,
+      expectedPieces: row.expectedUnits,
+      expectedUnits: row.expectedUnits,
+      description: row.description,
+      warningNote: row.warningNote,
+    };
+  });
+
+  return { container, references };
+}
+
+export function evaluateExistingContainerAgainstManifest(
+  existingRefs: ReferenceItem[],
+  existingMovements: Movement[],
+  spec: PlannedContainerSpec
+): {
+  conflicts: ContainerConflictDetail[];
+  preservedManualReferencesCount: number;
+} {
+  const conflicts: ContainerConflictDetail[] = [];
+  const matchedDbRefIds = new Set<string>();
+
+  const manualRefCodes = new Set(
+    existingMovements
+      .filter((m) => m.operationType === 'MANUAL_ADD_REF')
+      .map((m) => normalizeReference(m.reference))
+  );
+
+  for (const row of spec.manifest) {
+    const normRef = normalizeReference(row.reference);
+    const normSrc = normalizeReference(row.sourceReference || row.reference);
+
+    const matchingDbRows = existingRefs.filter((r) => {
+      const rMain = normalizeReference(r.reference);
+      const rCanon = normalizeReference(r.canonicalReference || '');
+      const rOrig = normalizeReference(r.originalDocumentReference || '');
+      const rSrc = normalizeReference(r.sourceReference || '');
+      return (
+        rMain === normRef ||
+        rMain === normSrc ||
+        (rCanon !== '' && (rCanon === normRef || rCanon === normSrc)) ||
+        (rOrig !== '' && (rOrig === normRef || rOrig === normSrc)) ||
+        (rSrc !== '' && (rSrc === normRef || rSrc === normSrc))
+      );
+    });
+
+    if (matchingDbRows.length > 1) {
+      conflicts.push({
+        type: 'DUPLICATE_REFERENCE',
+        reference: row.reference,
+        sourceReference: row.sourceReference,
+        message: `La referencia ${row.reference} aparece duplicada (${matchingDbRows.length} filas) en el contenedor guardado.`,
+        storedValue: matchingDbRows.length,
+        manifestValue: 1,
+      });
+      matchingDbRows.forEach((m) => matchedDbRefIds.add(m.id));
+      continue;
+    }
+
+    if (matchingDbRows.length === 0) {
+      conflicts.push({
+        type: 'MISSING_REFERENCE',
+        reference: row.reference,
+        sourceReference: row.sourceReference,
+        message: `La referencia ${row.reference}${
+          row.sourceReference !== row.reference ? ` (doc: ${row.sourceReference})` : ''
+        } figura en el manifiesto (${row.expectedPackages} bultos / ${row.expectedUnits} pzas), pero no existe en el registro guardado.`,
+        storedValue: 'No existe',
+        manifestValue: `${row.expectedPackages} bultos / ${row.expectedUnits} pzas`,
+      });
+      continue;
+    }
+
+    const dbRef = matchingDbRows[0];
+    matchedDbRefIds.add(dbRef.id);
+
+    if (dbRef.expectedPackages !== row.expectedPackages) {
+      conflicts.push({
+        type: 'EXPECTED_PACKAGES_MISMATCH',
+        reference: row.reference,
+        sourceReference: row.sourceReference,
+        message: `Diferencia de bultos esperados en ${row.reference}: guardado ${dbRef.expectedPackages}, manifiesto ${row.expectedPackages}.`,
+        storedValue: dbRef.expectedPackages,
+        manifestValue: row.expectedPackages,
+        registeredPackages: dbRef.registeredPackages,
+      });
+    }
+
+    const storedUnits = dbRef.expectedUnits ?? dbRef.expectedPieces;
+    if (storedUnits !== undefined && storedUnits !== row.expectedUnits) {
+      conflicts.push({
+        type: 'EXPECTED_UNITS_MISMATCH',
+        reference: row.reference,
+        sourceReference: row.sourceReference,
+        message: `Diferencia de piezas previstas en ${row.reference}: guardado ${storedUnits}, manifiesto ${row.expectedUnits}.`,
+        storedValue: storedUnits,
+        manifestValue: row.expectedUnits,
+        registeredPackages: dbRef.registeredPackages,
+      });
+    }
+  }
+
+  let preservedManualReferencesCount = 0;
+  for (const dbRef of existingRefs) {
+    if (matchedDbRefIds.has(dbRef.id)) continue;
+    const normDbRef = normalizeReference(dbRef.reference);
+    if (manualRefCodes.has(normDbRef)) {
+      preservedManualReferencesCount++;
+    } else {
+      conflicts.push({
+        type: 'UNEXPECTED_REFERENCE',
+        reference: dbRef.reference,
+        sourceReference: dbRef.sourceReference || dbRef.originalDocumentReference,
+        message: `La referencia guardada ${dbRef.reference} (${dbRef.expectedPackages} bultos esp., ${dbRef.registeredPackages} reg.) no forma parte del manifiesto previsto oficial.`,
+        storedValue: `${dbRef.expectedPackages} bultos`,
+        manifestValue: 'No prevista',
+        registeredPackages: dbRef.registeredPackages,
+      });
+    }
+  }
+
+  return { conflicts, preservedManualReferencesCount };
 }

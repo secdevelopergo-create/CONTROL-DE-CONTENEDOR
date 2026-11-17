@@ -1,10 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Container, ContainerStats, ReferenceItem, Movement, UnidentifiedItem } from './types';
+import {
+  Container,
+  ContainerStats,
+  ReferenceItem,
+  Movement,
+  UnidentifiedItem,
+  PlannedPreparationSummary,
+} from './types';
 import {
   dbService,
   computeContainerStats,
 } from './services/db';
 import { createReferenceItems } from './services/excel';
+import { PLANNED_CONTAINERS } from './services/plannedManifests';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { DownloadScreen } from './components/DownloadScreen';
@@ -18,6 +26,10 @@ export default function App() {
   const [containers, setContainers] = useState<Container[]>([]);
   const [containerStatsMap, setContainerStatsMap] = useState<Record<string, ContainerStats>>({});
   const [activeContainerId, setActiveContainerId] = useState<string | null>(null);
+  const [preparationSummary, setPreparationSummary] = useState<PlannedPreparationSummary | null>(
+    null
+  );
+  const [isPreparingPlanned, setIsPreparingPlanned] = useState(false);
 
   // Modals
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -52,8 +64,40 @@ export default function App() {
     }
   }, []);
 
+  const handlePreparePlannedContainers = useCallback(async () => {
+    setIsPreparingPlanned(true);
+    try {
+      const summary = await dbService.preparePlannedContainers(PLANNED_CONTAINERS);
+      setPreparationSummary(summary);
+      await refreshContainers();
+      return summary;
+    } catch (err) {
+      console.error('Error preparando contenedores previstos 3, 4 y 5:', err);
+      return null;
+    } finally {
+      setIsPreparingPlanned(false);
+    }
+  }, [refreshContainers]);
+
   useEffect(() => {
-    refreshContainers();
+    let isMounted = true;
+    const initializeApp = async () => {
+      try {
+        const summary = await dbService.preparePlannedContainers(PLANNED_CONTAINERS);
+        if (isMounted) {
+          setPreparationSummary(summary);
+        }
+      } catch (err) {
+        console.error('Error inicializando contenedores previstos 3, 4 y 5:', err);
+      }
+      if (isMounted) {
+        await refreshContainers();
+      }
+    };
+    initializeApp();
+    return () => {
+      isMounted = false;
+    };
   }, [refreshContainers]);
 
   // Handle new container import confirmation with duplicate code protection
@@ -145,6 +189,9 @@ export default function App() {
           <Dashboard
             containers={containers}
             containerStatsMap={containerStatsMap}
+            preparationSummary={preparationSummary}
+            isPreparingPlanned={isPreparingPlanned}
+            onPreparePlannedContainers={handlePreparePlannedContainers}
             onSelectContainer={(id) => setActiveContainerId(id)}
             onNewContainer={() => setIsImportOpen(true)}
             onDeleteContainer={handleDeleteContainer}
@@ -171,7 +218,11 @@ export default function App() {
       />
 
       {/* Help Modal */}
-      <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+      <HelpModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
+        onOpenTestSuite={() => setIsTestSuiteOpen(true)}
+      />
 
       {/* Automated Test Suite Modal */}
       <TestSuiteModal

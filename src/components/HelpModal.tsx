@@ -4,9 +4,10 @@ import { HelpCircle, X, CheckCircle2, AlertTriangle, ShieldCheck, Zap } from 'lu
 interface HelpModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenTestSuite?: () => void;
 }
 
-export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
+export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose, onOpenTestSuite }) => {
   if (!isOpen) return null;
 
   return (
@@ -48,17 +49,25 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
             <p>
               Si llegan referencias que no estaban en el archivo Excel original, puedes incorporarlas al contenedor con el botón <b>+ AGREGAR REFERENCIA</b> o escribiendo el código en el registro rápido. Podrás indicar los bultos esperados y recibidos para que se sumen al control y a los informes oficiales.
             </p>
-            <div className="text-[11px] text-amber-900 bg-amber-50 p-2.5 rounded-lg border border-amber-200">
-              <b>Nota sobre R-26415:</b> La referencia R-26415 ya fue recibida en una entrega anterior y no está en este contenedor. Si llegaran bultos físicos no previstos, puedes agregarlos al instante con sus respectivos bultos.
+            <div className="space-y-1.5 text-[11px] bg-amber-50 p-3 rounded-lg border border-amber-200 text-amber-900">
+              <p>
+                <b>Advertencia sobre R-26423:</b> Ya llegaron 720 piezas con el segundo contenedor. Se conserva la previsión de packing del tercer contenedor, pero se exige cotejar una nueva llegada física antes de incorporarla nuevamente al inventario. No marques ese bulto como recibido automáticamente.
+              </p>
+              <p>
+                <b>Trazabilidad R-26195:</b> Corresponde a la referencia canónica R-2608114. El sistema conserva ambos códigos para trazabilidad y auditoría.
+              </p>
+              <p>
+                <b>Nota sobre R-26415:</b> Continúa pendiente de aclaración con el proveedor. No se debe suponer su recepción.
+              </p>
             </div>
           </div>
 
           <div className="space-y-2 border-t pt-3">
             <h3 className="font-bold text-slate-900 uppercase text-xs">
-              3. Corrección y Deshacer
+              3. Corrección y Deshacer Compensatorio
             </h3>
             <p>
-              Usa el botón <b>DESHACER ÚLTIMO REGISTRO</b> para revertir rápidamente un error, o haz clic en cualquier referencia para restar bultos o corregir el conteo con nota de auditoría.
+              Usa el botón <b>DESHACER ÚLTIMO REGISTRO</b> para revertir un error. El sistema genera un movimiento compensatorio auditado sin borrar el historial previo. Múltiples clics retroceden ordenadamente en el historial sin bucles.
             </p>
           </div>
 
@@ -67,21 +76,30 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
               4. Casos de Prueba Verificados
             </h3>
             <div className="bg-slate-50 p-3 rounded-lg border font-mono space-y-1">
-              <p>✓ PRUEBA 1: R-2608001 (1 bulto) &rarr; +1 &rarr; COMPLETO (verde)</p>
-              <p>✓ PRUEBA 2: R-2608003 (5 bultos) &rarr; +2 &rarr; PARCIAL (faltan 3) &rarr; +3 &rarr; COMPLETO</p>
-              <p>✓ PRUEBA 3: R-2608004 (2 bultos) &rarr; +3 &rarr; Advertencia de Sobrante (+1 excedente)</p>
-              <p>✓ PRUEBA 4: Ref desconocida &rarr; Registro en Mercancía No Identificada</p>
-              <p>✓ PRUEBA 5: Persistencia IndexedDB &rarr; recargar la página mantiene datos intactos</p>
-              <p>✓ PRUEBA 6: Deshacer movimiento &rarr; restaura conteo previo</p>
-              <p>✓ PRUEBA 9: Filas duplicadas en Excel &rarr; se agrupan y suman automáticamente</p>
-              <p>✓ PRUEBA 10: Exportación de informe Excel con múltiples hojas</p>
-              <p>✓ PRUEBA 11: Bloqueo anti-doble clic en envíos simultáneos</p>
-              <p>✓ PRUEBA 12: Exportación y restauración de respaldo JSON</p>
+              <p>✓ CONTENEDOR 3: 105 referencias, 216 bultos (CTNS), 18.232 piezas</p>
+              <p>✓ PROGRESO ACOTADO: El excedente de una referencia no compensa faltantes de otra</p>
+              <p>✓ MATCHING EXACTO: 26423 y R26423 &rarr; R-26423 (sin adivinar 2614 &rarr; R-26414)</p>
+              <p>✓ R-26195 &rarr; Canónica R-2608114 con código original conservado</p>
+              <p>✓ DESHACER COMPENSATORIO: Historial inmutable y balance verificado</p>
+              <p>✓ PERSISTENCIA LOCAL: IndexedDB aislado en este dispositivo sin servidores externos</p>
             </div>
           </div>
         </div>
 
-        <div className="px-6 py-3 bg-slate-50 border-t flex justify-end">
+        <div className="px-6 py-3 bg-slate-50 border-t flex items-center justify-between">
+          {onOpenTestSuite ? (
+            <button
+              onClick={() => {
+                onClose();
+                onOpenTestSuite();
+              }}
+              className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 underline"
+            >
+              Diagnóstico y pruebas del sistema (aislado)
+            </button>
+          ) : (
+            <span />
+          )}
           <button
             onClick={onClose}
             className="px-5 py-2 bg-slate-900 text-white font-bold text-xs rounded-xl"
